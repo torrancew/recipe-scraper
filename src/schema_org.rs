@@ -1,5 +1,4 @@
-//! Parse a [schema.org Recipe](https://schema.org/Recipe) from various commonly observed
-//! structures
+//! parse a [schema.org Recipe](https://schema.org/Recipe) from various commonly observed structures
 
 use std::fmt::{self, Debug, Display};
 
@@ -68,14 +67,28 @@ impl IngredientList {
 #[serde(untagged)]
 pub enum Instruction {
     Simple(String),
-    Structured { text: String },
+    // try child steps before text because sections can also carry a summary
+    Section(InstructionSection),
+    Structured { name: Option<String>, text: String },
 }
 
 impl Display for Instruction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let text = match self {
             Self::Simple(s) => s,
-            Self::Structured { text } => text,
+            Self::Structured { text, .. } => text,
+            Self::Section(section) => {
+                if !section.name.is_empty() {
+                    f.write_str(&section.name)?;
+                }
+                for (index, direction) in section.directions.iter().enumerate() {
+                    if index > 0 || !section.name.is_empty() {
+                        f.write_str("\n")?;
+                    }
+                    Display::fmt(direction, f)?;
+                }
+                return Ok(());
+            }
         };
         Display::fmt(text, f)
     }
@@ -89,13 +102,17 @@ impl Instruction {
 
     pub(crate) fn structured(instruction: impl Into<String>) -> Self {
         let text = instruction.into();
-        Self::Structured { text }
+        Self::Structured {
+            name: Some(text.clone()),
+            text,
+        }
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Accessors, Deserialize)]
 pub struct InstructionSection {
     #[access(get)]
+    #[serde(default)]
     name: String,
     #[serde(rename = "itemListElement")]
     directions: Vec<Instruction>,
@@ -127,8 +144,9 @@ impl InstructionSection {
 #[serde(untagged)]
 pub enum InstructionList {
     Single(Instruction),
-    Multi(Vec<Instruction>),
+    // keep section lists compatible with the existing sections API
     Sections(Vec<InstructionSection>),
+    Multi(Vec<Instruction>),
 }
 
 impl InstructionList {
@@ -204,6 +222,7 @@ impl Display for Yield {
 #[access(get)]
 pub struct Recipe {
     name: String,
+    #[serde(default)]
     description: String,
     #[serde(rename = "cookTime")]
     cook_time: Option<MaybeDuration>,
@@ -254,13 +273,15 @@ pub enum GraphEntry {
         #[serde(rename = "@id")]
         id: String,
     },
+    // unrelated nodes should not discard valid recipes in the same graph
+    Other(serde_json::Value),
 }
 
 impl GraphEntry {
     pub fn recipe(&self) -> Option<&Recipe> {
         match self {
             Self::Recipe(r) => Some(r.as_ref()),
-            Self::Nonsense { .. } => None,
+            Self::Nonsense { .. } | Self::Other(_) => None,
         }
     }
 }
@@ -316,8 +337,6 @@ impl crate::Scrape for SchemaEntry {
         let html = scraper::Html::parse_document(html.as_ref());
         let try_from_json = |json| SchemaEntry::from_json_str(json).ok();
 
-        // Unwrap is appropriate here as this is a static selector, which we can reasonably expect
-        // to parse successfully
         let selector = scraper::Selector::parse(r#"script[type="application/ld+json"]"#).unwrap();
 
         html.select(&selector)

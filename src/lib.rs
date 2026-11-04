@@ -1,4 +1,8 @@
+mod extraction;
 mod schema_org;
+pub use extraction::{
+    extract_recipes, extract_recipes_with_url, ExtractedRecipe, ExtractionMethod,
+};
 pub use schema_org::{Recipe as SchemaOrgRecipe, SchemaEntry as SchemaOrgEntry};
 
 pub trait Extract {
